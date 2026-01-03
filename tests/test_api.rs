@@ -118,6 +118,21 @@ fn handle_scope_numbers() {
 }
 
 #[test]
+fn locker_unlocker_reentrant() {
+  let _setup_guard = setup::parallel_test();
+  let isolate = &mut v8::Isolate::new(Default::default());
+  let mut locker = v8::Locker::new(isolate);
+  {
+    let _nested = v8::Locker::new(&mut *locker);
+  }
+  unsafe { locker.exit() };
+  {
+    let _unlocker = v8::Unlocker::new(&mut *locker);
+  }
+  unsafe { locker.enter() };
+}
+
+#[test]
 fn global_handles() {
   let _setup_guard = setup::parallel_test();
   let isolate = &mut v8::Isolate::new(Default::default());

@@ -54,6 +54,8 @@ static_assert(sizeof(v8::PromiseRejectMessage) == sizeof(size_t) * 3,
               "PromiseRejectMessage size mismatch");
 
 static_assert(sizeof(v8::Locker) == sizeof(size_t) * 2, "Locker size mismatch");
+static_assert(sizeof(v8::Unlocker) == sizeof(size_t) * 1,
+              "Unlocker size mismatch");
 
 static_assert(sizeof(v8::ScriptCompiler::CompilationDetails) ==
                   sizeof(int64_t) * 3,
@@ -415,6 +417,25 @@ void v8__Isolate__CreateParams__CONSTRUCT(
 
 size_t v8__Isolate__CreateParams__SIZEOF() {
   return sizeof(v8::Isolate::CreateParams);
+}
+
+void v8__Locker__CONSTRUCT(uninit_t<v8::Locker>* locker, v8::Isolate* isolate) {
+  construct_in_place<v8::Locker>(locker, isolate);
+}
+
+void v8__Locker__DESTRUCT(v8::Locker* locker) { locker->~Locker(); }
+
+bool v8__Locker__IsLocked(v8::Isolate* isolate) {
+  return v8::Locker::IsLocked(isolate);
+}
+
+void v8__Unlocker__CONSTRUCT(uninit_t<v8::Unlocker>* unlocker,
+                             v8::Isolate* isolate) {
+  construct_in_place<v8::Unlocker>(unlocker, isolate);
+}
+
+void v8__Unlocker__DESTRUCT(v8::Unlocker* unlocker) {
+  unlocker->~Unlocker();
 }
 
 void v8__Isolate__DateTimeConfigurationChangeNotification(
