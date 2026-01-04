@@ -138,9 +138,10 @@ name = "shell"
 [[example]]
 name = "process"
 
-[[test]]
-name = "build"
-path = "build.rs"
+# Commented out to avoid conflict with build script
+# [[test]]
+# name = "build"
+# path = "build.rs"
 
 [[bench]]
 name = "function"
