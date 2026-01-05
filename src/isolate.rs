@@ -2034,6 +2034,22 @@ impl OwnedIsolate {
     // owned_isolate.init_scope_root();
     owned_isolate
   }
+
+  /// Creates a new isolate without auto-entering it.
+  /// This is intended for use with `v8::Locker` for multi-threaded access.
+  ///
+  /// When using this method, you MUST use `v8::Locker` to enter the isolate
+  /// before any V8 operations, and the isolate must be entered when dropped.
+  ///
+  /// # Safety
+  ///
+  /// The caller must ensure that:
+  /// 1. A `v8::Locker` is held when performing any V8 operations
+  /// 2. The isolate is entered (via Locker) when it is dropped
+  pub unsafe fn new_for_locker(params: CreateParams) -> Self {
+    let cxx_isolate = Isolate::new_impl(params);
+    Self::new_already_entered(cxx_isolate)
+  }
 }
 
 impl Drop for OwnedIsolate {
