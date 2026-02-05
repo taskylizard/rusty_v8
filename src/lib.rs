@@ -125,6 +125,7 @@ pub use isolate::NearHeapLimitCallback;
 pub use isolate::OomDetails;
 pub use isolate::OomErrorCallback;
 pub use isolate::OwnedIsolate;
+pub use isolate::current_raw_isolate_ptr;
 pub use locker::Locker;
 pub use isolate::PromiseHook;
 pub use isolate::PromiseHookType;

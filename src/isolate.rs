@@ -793,6 +793,21 @@ impl UnsafeRawIsolatePtr {
   }
 }
 
+/// Return the currently entered isolate (if any) as a raw pointer.
+///
+/// # Safety
+/// Returned pointer is only valid for identity comparison; do not dereference
+/// unless you have independently established that the isolate is still alive
+/// and correctly entered/locked.
+pub unsafe fn current_raw_isolate_ptr() -> Option<UnsafeRawIsolatePtr> {
+  let ptr = unsafe { v8__Isolate__GetCurrent() };
+  if ptr.is_null() {
+    None
+  } else {
+    Some(UnsafeRawIsolatePtr(ptr))
+  }
+}
+
 #[repr(C)]
 pub struct RealIsolate(Opaque);
 
@@ -2049,6 +2064,19 @@ impl OwnedIsolate {
   pub unsafe fn new_for_locker(params: CreateParams) -> Self {
     let cxx_isolate = Isolate::new_impl(params);
     Self::new_already_entered(cxx_isolate)
+  }
+
+  /// Returns true if this isolate is the currently entered isolate on the
+  /// calling thread.
+  pub fn is_current(&self) -> bool {
+    unsafe {
+      if let Some(current) = current_raw_isolate_ptr() {
+        let this = self.as_raw_isolate_ptr();
+        !this.is_null() && current.0 == this.0
+      } else {
+        false
+      }
+    }
   }
 }
 
