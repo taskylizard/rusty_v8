@@ -50,7 +50,10 @@ mod raw {
   }
 
   unsafe extern "C" {
-    fn v8__Unlocker__CONSTRUCT(unlocker: *mut Unlocker, isolate: *const RealIsolate);
+    fn v8__Unlocker__CONSTRUCT(
+      unlocker: *mut Unlocker,
+      isolate: *const RealIsolate,
+    );
     fn v8__Unlocker__DESTRUCT(unlocker: *mut Unlocker);
   }
 }

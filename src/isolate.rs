@@ -2088,7 +2088,8 @@ impl Drop for OwnedIsolate {
         snapshot_creator.is_none(),
         "If isolate was created using v8::Isolate::snapshot_creator, you should use v8::OwnedIsolate::create_blob before dropping an isolate."
       );
-      let is_current = std::ptr::eq(self.cxx_isolate.as_mut(), v8__Isolate__GetCurrent());
+      let is_current =
+        std::ptr::eq(self.cxx_isolate.as_mut(), v8__Isolate__GetCurrent());
       if is_current {
         self.exit();
       } else {

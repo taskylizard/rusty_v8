@@ -221,7 +221,9 @@ fn build_binding() {
       if !clang_bin.exists() {
         continue;
       }
-      let Ok(output) = Command::new(&clang_bin).arg("-print-resource-dir").output() else {
+      let Ok(output) =
+        Command::new(&clang_bin).arg("-print-resource-dir").output()
+      else {
         continue;
       };
       if !output.status.success() {
@@ -241,7 +243,8 @@ fn build_binding() {
 
     // Fallback to Chromium-downloaded clang resource headers used for V8 builds.
     if !added_resource_dir {
-      let chromium_clang_lib = build_dir().join("clang").join("lib").join("clang");
+      let chromium_clang_lib =
+        build_dir().join("clang").join("lib").join("clang");
       if let Ok(entries) = fs::read_dir(chromium_clang_lib) {
         for entry in entries.flatten() {
           let include_dir = entry.path().join("include");
@@ -256,7 +259,9 @@ fn build_binding() {
     }
 
     if !added_resource_dir {
-      println!("cargo:warning=Could not resolve clang resource dir for bindgen");
+      println!(
+        "cargo:warning=Could not resolve clang resource dir for bindgen"
+      );
     }
   }
 
