@@ -199,18 +199,64 @@ fn build_binding() {
     clang_args.push(sdk_path.trim().to_string());
   } else if target_os == "linux" {
     // Add clang resource directory for builtin headers (stddef.h, etc)
+    let mut clang_candidates = Vec::new();
     if let Ok(libclang_path) = env::var("LIBCLANG_PATH") {
-      let clang_dir = PathBuf::from(&libclang_path)
-        .parent()
-        .unwrap()
-        .to_path_buf();
-      let clang_bin = clang_dir.join("bin/clang");
-      if let Ok(output) =
-        Command::new(clang_bin).arg("-print-resource-dir").output()
-      {
-        let resource_dir = String::from_utf8(output.stdout).unwrap();
-        clang_args.push(format!("-isystem{}/include", resource_dir.trim()));
+      let libclang_path = PathBuf::from(libclang_path);
+      if let Some(parent) = libclang_path.parent() {
+        // Common layout: <prefix>/lib and <prefix>/bin/clang
+        clang_candidates.push(parent.join("bin/clang"));
+        // Nix split packages can place libclang under <prefix>/lib while clang
+        // lives in a different parent layout; try one level up as well.
+        if let Some(grandparent) = parent.parent() {
+          clang_candidates.push(grandparent.join("bin/clang"));
+        }
       }
+    }
+    if let Ok(clang_from_path) = which("clang") {
+      clang_candidates.push(clang_from_path);
+    }
+
+    let mut added_resource_dir = false;
+    for clang_bin in clang_candidates {
+      if !clang_bin.exists() {
+        continue;
+      }
+      let Ok(output) = Command::new(&clang_bin).arg("-print-resource-dir").output() else {
+        continue;
+      };
+      if !output.status.success() {
+        continue;
+      }
+      let Ok(resource_dir) = String::from_utf8(output.stdout) else {
+        continue;
+      };
+      let include_dir = PathBuf::from(resource_dir.trim()).join("include");
+      if !include_dir.join("stddef.h").exists() {
+        continue;
+      }
+      clang_args.push(format!("-isystem{}", include_dir.display()));
+      added_resource_dir = true;
+      break;
+    }
+
+    // Fallback to Chromium-downloaded clang resource headers used for V8 builds.
+    if !added_resource_dir {
+      let chromium_clang_lib = build_dir().join("clang").join("lib").join("clang");
+      if let Ok(entries) = fs::read_dir(chromium_clang_lib) {
+        for entry in entries.flatten() {
+          let include_dir = entry.path().join("include");
+          if !include_dir.join("stddef.h").exists() {
+            continue;
+          }
+          clang_args.push(format!("-isystem{}", include_dir.display()));
+          added_resource_dir = true;
+          break;
+        }
+      }
+    }
+
+    if !added_resource_dir {
+      println!("cargo:warning=Could not resolve clang resource dir for bindgen");
     }
   }
 
