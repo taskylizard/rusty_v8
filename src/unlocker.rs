@@ -27,6 +27,7 @@ mod raw {
   use std::mem::MaybeUninit;
 
   use crate::Isolate;
+  use crate::isolate::RealIsolate;
 
   #[repr(C)]
   #[derive(Debug)]
@@ -36,7 +37,7 @@ mod raw {
     pub fn new(isolate: &Isolate) -> Self {
       unsafe {
         let mut s = Self(MaybeUninit::uninit().assume_init());
-        v8__Unlocker__CONSTRUCT(&mut s, isolate);
+        v8__Unlocker__CONSTRUCT(&mut s, isolate.as_real_ptr());
         s
       }
     }
@@ -49,7 +50,7 @@ mod raw {
   }
 
   unsafe extern "C" {
-    fn v8__Unlocker__CONSTRUCT(unlocker: *mut Unlocker, isolate: *const Isolate);
+    fn v8__Unlocker__CONSTRUCT(unlocker: *mut Unlocker, isolate: *const RealIsolate);
     fn v8__Unlocker__DESTRUCT(unlocker: *mut Unlocker);
   }
 }

@@ -61,6 +61,7 @@ mod raw {
   use std::mem::MaybeUninit;
 
   use crate::Isolate;
+  use crate::isolate::RealIsolate;
 
   #[repr(C)]
   #[derive(Debug)]
@@ -70,7 +71,7 @@ mod raw {
     pub fn new(isolate: &Isolate) -> Self {
       unsafe {
         let mut s = Self(MaybeUninit::uninit().assume_init());
-        v8__Locker__CONSTRUCT(&mut s, isolate);
+        v8__Locker__CONSTRUCT(&mut s, isolate.as_real_ptr());
         // v8-locker.h disallows copying and assigning, but it does not disallow
         // moving so this is hopefully safe.
         s
@@ -78,7 +79,7 @@ mod raw {
     }
 
     pub fn is_locked(isolate: &Isolate) -> bool {
-      unsafe { v8__Locker__IsLocked(isolate) }
+      unsafe { v8__Locker__IsLocked(isolate.as_real_ptr()) }
     }
   }
 
@@ -89,8 +90,8 @@ mod raw {
   }
 
   unsafe extern "C" {
-    fn v8__Locker__CONSTRUCT(locker: *mut Locker, isolate: *const Isolate);
+    fn v8__Locker__CONSTRUCT(locker: *mut Locker, isolate: *const RealIsolate);
     fn v8__Locker__DESTRUCT(locker: *mut Locker);
-    fn v8__Locker__IsLocked(isolate: *const Isolate) -> bool;
+    fn v8__Locker__IsLocked(isolate: *const RealIsolate) -> bool;
   }
 }

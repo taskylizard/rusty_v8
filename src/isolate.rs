@@ -2088,13 +2088,14 @@ impl Drop for OwnedIsolate {
         snapshot_creator.is_none(),
         "If isolate was created using v8::Isolate::snapshot_creator, you should use v8::OwnedIsolate::create_blob before dropping an isolate."
       );
-      // Safety: We need to check `this == Isolate::GetCurrent()` before calling exit()
-      assert!(
-        std::ptr::eq(self.cxx_isolate.as_mut(), v8__Isolate__GetCurrent()),
-        "v8::OwnedIsolate instances must be dropped in the reverse order of creation. They are entered upon creation and exited upon being dropped."
-      );
-      // self.dispose_scope_root();
-      self.exit();
+      let is_current = std::ptr::eq(self.cxx_isolate.as_mut(), v8__Isolate__GetCurrent());
+      if is_current {
+        self.exit();
+      } else {
+        let locker = crate::Locker::new(self);
+        locker.enter();
+        locker.exit();
+      }
       self.dispose_annex();
       Platform::notify_isolate_shutdown(&get_current_platform(), self);
       self.dispose();
