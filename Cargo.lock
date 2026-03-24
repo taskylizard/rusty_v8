@@ -545,7 +545,7 @@ dependencies = [
  "ndk 0.3.0",
  "ndk-glue",
  "pixels",
- "v8",
+ "flora_v8",
  "winit",
 ]
 
@@ -1743,8 +1743,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
 
 [[package]]
-name = "v8"
-version = "142.2.0"
+name = "flora_v8"
+version = "142.2.0-flora.1"
 dependencies = [
  "align-data",
  "bindgen",

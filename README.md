@@ -2,9 +2,9 @@
 
 V8 Version: 14.2.231.17
 
-[![ci](https://github.com/denoland/rusty_v8/workflows/ci/badge.svg?branch=main)](https://github.com/denoland/rusty_v8/actions)
-[![crates](https://img.shields.io/crates/v/v8.svg)](https://crates.io/crates/v8)
-[![docs](https://docs.rs/v8/badge.svg)](https://docs.rs/v8)
+[![ci](https://github.com/taskylizard/rusty_v8/workflows/ci/badge.svg?branch=main)](https://github.com/taskylizard/rusty_v8/actions)
+[![crates](https://img.shields.io/crates/v/flora_v8.svg)](https://crates.io/crates/flora_v8)
+[![docs](https://docs.rs/flora_v8/badge.svg)](https://docs.rs/flora_v8)
 
 ## Goals
 
@@ -66,7 +66,7 @@ We default to release builds of `v8` due to performance & CI reasons in `deno`.
 
 Tells the build script where to get binary builds from. Understands `http://`
 and `https://` URLs, and file paths. The default is
-https://github.com/denoland/rusty_v8/releases.
+https://github.com/taskylizard/rusty_v8/releases.
 
 File-based mirrors are good for using cached downloads. First, point the
 environment variable to a suitable location:
@@ -79,7 +79,7 @@ Then populate the cache:
 ```bash
 #!/bin/bash
 
-# see https://github.com/denoland/rusty_v8/releases
+# see https://github.com/taskylizard/rusty_v8/releases
 
 for REL in v0.13.0 v0.12.0; do
   mkdir -p $RUSTY_V8_MIRROR/$REL
@@ -89,7 +89,7 @@ for REL in v0.13.0 v0.12.0; do
   ; do
     if [ ! -f $RUSTY_V8_MIRROR/$REL/$FILE ]; then
       wget -O $RUSTY_V8_MIRROR/$REL/$FILE \
-        https://github.com/denoland/rusty_v8/releases/download/$REL/$FILE
+        https://github.com/taskylizard/rusty_v8/releases/download/$REL/$FILE
     fi
   done
 done

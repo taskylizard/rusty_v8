@@ -13,7 +13,7 @@ path = "lib.rs"
 crate-type = ["cdylib"]
 
 [target.'cfg(target_os = "android")'.dependencies]
-v8 = { path = "../../" }
+v8 = { package = "flora_v8", path = "../../" }
 winit = "0.26"
 pixels = "0.8.0"
 ndk = "0.3.0"
