@@ -149,7 +149,11 @@ jobs:
         uses: cargo-bins/cargo-binstall@main
 
       - name: Install nextest
-        run: cargo binstall cargo-nextest --secure
+        env:
+          # Avoid GitHub API rate limits for unauthenticated requests.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Rust toolchain is pinned; pin cargo-nextest to a compatible version.
+        run: cargo binstall cargo-nextest --version 0.9.128 --secure --no-confirm
 
       - name: Install python
         uses: actions/setup-python@v5
