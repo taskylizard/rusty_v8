@@ -434,9 +434,7 @@ void v8__Unlocker__CONSTRUCT(uninit_t<v8::Unlocker>* unlocker,
   construct_in_place<v8::Unlocker>(unlocker, isolate);
 }
 
-void v8__Unlocker__DESTRUCT(v8::Unlocker* unlocker) {
-  unlocker->~Unlocker();
-}
+void v8__Unlocker__DESTRUCT(v8::Unlocker* unlocker) { unlocker->~Unlocker(); }
 
 void v8__Isolate__DateTimeConfigurationChangeNotification(
     v8::Isolate* isolate, v8::Isolate::TimeZoneDetection time_zone_detection) {
