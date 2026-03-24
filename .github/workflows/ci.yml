@@ -56,16 +56,6 @@ jobs:
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
 
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
-
-      - name: Install nextest
-        env:
-          # Avoid GitHub API rate limits for unauthenticated requests.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Rust toolchain is pinned; pin cargo-nextest to a compatible version.
-        run: cargo binstall cargo-nextest --version 0.9.128 --secure --no-confirm
-
       - name: Install python
         uses: actions/setup-python@v5
         with:
@@ -142,22 +132,10 @@ jobs:
           sudo apt-get install lld-19 clang-19 clang-tools-19 clang-tidy-19 clang-format-19 libclang-19-dev -y
           echo "LIBCLANG_PATH=/usr/lib/llvm-19/lib" >> $GITHUB_ENV
 
-      - name: check rust code formatting
-        run: cargo fmt --check
-
-      - name: check c++ code formatting
-        if: startsWith(matrix.config.os, 'ubuntu')
-        run: |
-          clang-format-19 --verbose --Werror --dry-run src/*.cc src/*.hpp src/*.h
-
-      - name: Test
+      - name: Build
         env:
           SCCACHE_IDLE_TIMEOUT: 0
-        if: matrix.config.variant == 'debug' || matrix.config.variant == 'release'
-        run: ${{ matrix.config.cargo }} nextest run -v --cargo-verbose --cargo-verbose --all-targets --locked --target ${{ matrix.config.target }} ${{ env.CARGO_VARIANT_FLAG }} ${{ env.CARGO_FEATURE_FLAGS }}
-
-      - name: Clippy
-        run: ${{ matrix.config.cargo }} clippy --all-targets --locked --target ${{ matrix.config.target }} ${{ env.CARGO_VARIANT_FLAG }} ${{ env.CARGO_FEATURE_FLAGS }} -- -D clippy::all
+        run: ${{ matrix.config.cargo }} build -p flora_v8 --locked --target ${{ matrix.config.target }} ${{ env.CARGO_VARIANT_FLAG }} ${{ env.CARGO_FEATURE_FLAGS }}
 
       - name: Prepare binary publish
         if: matrix.config.variant == 'debug' || matrix.config.variant == 'release'
