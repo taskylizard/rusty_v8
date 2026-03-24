@@ -1,6 +1,6 @@
 [package]
 name = "flora_v8"
-version = "142.2.0-flora.2"
+version = "142.2.0-flora.3"
 description = "Rust bindings to V8 (flora fork)"
 readme = "README.md"
 authors = ["the Deno authors"]
