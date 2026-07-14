@@ -263,6 +263,30 @@ fn build_binding() {
         "cargo:warning=Could not resolve clang resource dir for bindgen"
       );
     }
+  } else if target_os == "ios" {
+    // iOS: point bindgen at the iOS (device) or iOS-simulator SDK and set the
+    // matching clang target triple so the V8 headers parse correctly.
+    let target_triple = env::var("TARGET").unwrap();
+    let is_sim = target_triple.ends_with("-sim")
+      || target_triple.starts_with("x86_64-apple-ios");
+    let sdk = if is_sim {
+      "iphonesimulator"
+    } else {
+      "iphoneos"
+    };
+    let output = Command::new("xcrun")
+      .args(["--sdk", sdk, "--show-sdk-path"])
+      .output()
+      .unwrap();
+    let sdk_path = String::from_utf8(output.stdout).unwrap();
+    clang_args.push("-isysroot".to_string());
+    clang_args.push(sdk_path.trim().to_string());
+    let clang_target = if is_sim {
+      "arm64-apple-ios-simulator"
+    } else {
+      "arm64-apple-ios"
+    };
+    clang_args.push(format!("--target={clang_target}"));
   }
 
   let bindings = bindgen::Builder::default()
@@ -273,13 +297,17 @@ fn build_binding() {
     .generate_cstr(true)
     .rustified_enum(".*UseCounterFeature")
     .rustified_enum(".*ModuleImportPhase")
+    .rustified_enum(".*Intercepted")
     .bitfield_enum(".*GCType")
     .bitfield_enum(".*GCCallbackFlags")
     .allowlist_item("v8__.*")
     .allowlist_item("cppgc__.*")
     .allowlist_item("RustObj")
     .allowlist_item("memory_span_t")
+    .allowlist_item("const_memory_span_t")
     .allowlist_item("ExternalConstOneByteStringResource")
+    .blocklist_item("cppgc.*Visitor")
+    .blocklist_item("RustObj.*Trace")
     .generate()
     .expect("Unable to generate bindings");
 
@@ -360,6 +388,11 @@ fn build_v8(is_asan: bool) {
     env::var("CARGO_FEATURE_V8_ENABLE_V8_CHECKS").is_ok()
   ));
 
+  gn_args.push(format!(
+    "rusty_v8_enable_simdutf={}",
+    env::var("CARGO_FEATURE_SIMDUTF").is_ok()
+  ));
+
   // Fix GN's host_cpu detection when using x86_64 bins on Apple Silicon
   if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
     gn_args.push("host_cpu=\"arm64\"".to_string());
@@ -395,17 +428,34 @@ fn build_v8(is_asan: bool) {
     println!("cargo:warning=Not using sccache or ccache");
   }
 
-  if let Ok(args) = env::var("GN_ARGS") {
-    for arg in args.split_whitespace() {
-      gn_args.push(arg.to_string());
-    }
+  // Forward caller-provided GN args verbatim.
+  let gn_args_env = env::var("GN_ARGS").unwrap_or_default();
+  if !gn_args_env.trim().is_empty() {
+    gn_args.push(gn_args_env.clone());
+  }
+
+  // rusty_v8 ships a single static archive that downstream crates may link
+  // into a shared library (cdylib). On Linux, V8's default "local-exec" TLS
+  // model emits R_X86_64_TPOFF32 relocations against thread-locals such as
+  // `g_current_isolate_`, which lld refuses to place in a `-shared` object,
+  // so any cdylib that links the archive fails to link. Enabling this V8 GN
+  // arg routes the `V8_TLS_USED_IN_LIBRARY` define into both `internal_config`
+  // and the `features` config, switching V8 to the shared-library-safe TLS
+  // path (local-dynamic model + out-of-line accessor) uniformly across V8's
+  // own sources and rusty_v8's bindings.
+  if target_os == "linux"
+    && !gn_args_env.contains("v8_monolithic_for_shared_library")
+  {
+    gn_args.push("v8_monolithic_for_shared_library=true".to_string());
   }
   // cross-compilation setup
   if target_arch == "aarch64" {
     gn_args.push(r#"target_cpu="arm64""#.to_string());
-    gn_args.push("use_sysroot=true".to_string());
-    maybe_install_sysroot("arm64");
-    maybe_install_sysroot("amd64");
+    if target_os == "linux" {
+      gn_args.push("use_sysroot=true".to_string());
+      maybe_install_sysroot("arm64");
+      maybe_install_sysroot("amd64");
+    }
   }
   if target_arch == "arm" {
     gn_args.push(r#"target_cpu="arm""#.to_string());
@@ -413,6 +463,16 @@ fn build_v8(is_asan: bool) {
     gn_args.push("use_sysroot=true".to_string());
     maybe_install_sysroot("i386");
     maybe_install_sysroot("arm");
+  }
+  if target_arch == "riscv64" {
+    gn_args.push(r#"target_cpu="riscv64""#.to_string());
+    // Cross compiling needs to set v8_target_cpu
+    gn_args.push(r#"v8_target_cpu="riscv64""#.to_string());
+    if target_os == "linux" {
+      gn_args.push("use_sysroot=true".to_string());
+      maybe_install_sysroot("riscv64");
+      maybe_install_sysroot("amd64");
+    }
   }
 
   let target_triple = env::var("TARGET").unwrap();
@@ -466,6 +526,34 @@ fn build_v8(is_asan: bool) {
       "./third_party/catapult",
       &format!("{CHROMIUM_URI}/catapult.git"),
     );
+  }
+
+  // iOS / iOS-simulator. iOS denies the JIT entitlement to non-WebKit apps, so
+  // a device build must be jitless -- which in turn requires V8's optimizing
+  // tiers (Sparkplug/Maglev/Turbofan) and WebAssembly to be disabled. The
+  // simulator runs on the host and could keep the JIT, but WebAssembly is
+  // disabled there too because Torque can't generate the Wasm builtins in this
+  // configuration. `target_cpu="arm64"` is already set above for aarch64.
+  // Pass an explicit `target_os="ios"` in GN_ARGS to fully override this.
+  if target_os == "ios" && !gn_args_env.contains(r#"target_os="ios""#) {
+    let is_sim = target_triple.ends_with("-sim")
+      || target_triple.starts_with("x86_64-apple-ios");
+    gn_args.push(r#"target_os="ios""#.to_string());
+    gn_args.push(format!(
+      r#"target_environment="{}""#,
+      if is_sim { "simulator" } else { "device" }
+    ));
+    gn_args.push(r#"ios_deployment_target="14.0""#.to_string());
+    gn_args.push("ios_enable_code_signing=false".to_string());
+    gn_args.push("treat_warnings_as_errors=false".to_string());
+    gn_args.push("v8_enable_webassembly=false".to_string());
+    if !is_sim {
+      // Device: no JIT permitted -> jitless build, all tiers off.
+      gn_args.push("v8_jitless=true".to_string());
+      gn_args.push("v8_enable_sparkplug=false".to_string());
+      gn_args.push("v8_enable_maglev=false".to_string());
+      gn_args.push("v8_enable_turbofan=false".to_string());
+    }
   }
 
   if target_triple.starts_with("i686-") {
@@ -585,6 +673,9 @@ fn prebuilt_features_suffix() -> String {
   if env::var("CARGO_FEATURE_V8_ENABLE_SANDBOX").is_ok() {
     features.push_str("_sandbox");
   }
+  if env::var("CARGO_FEATURE_SIMDUTF").is_ok() {
+    features.push_str("_simdutf");
+  }
   features
 }
 
@@ -686,37 +777,74 @@ fn download_file(url: &str, filename: &Path) {
     fs::remove_file(&tmpfile).unwrap();
   }
 
-  // Try downloading with python first. Python is a V8 build dependency,
-  // so this saves us from adding a Rust HTTP client dependency.
-  println!("Downloading (using Python) {url}");
-  let status = Command::new(python())
-    .arg("./tools/download_file.py")
-    .arg("--url")
-    .arg(url)
-    .arg("--filename")
-    .arg(&tmpfile)
-    .status();
+  // Try downloading with deno first, then python, then curl.
+  println!("Downloading {url}");
+  let status = which("deno").ok().and_then(|deno| {
+    println!("Trying with Deno...");
+    Command::new(deno)
+      .arg("eval")
+      .arg(
+        "const [url, path] = Deno.args; \
+         const resp = await fetch(url); \
+         if (!resp.ok) Deno.exit(1); \
+         const file = await Deno.open(path, { write: true, create: true }); \
+         await resp.body.pipeTo(file.writable);",
+      )
+      // Note: `deno eval` runs with all permissions implicitly granted and does
+      // not accept `--allow-*` flags, so passing them here makes `deno eval`
+      // error out ("unexpected argument '--allow-net'") and the download
+      // silently falls back to Python/curl.
+      .arg("--")
+      .arg(url)
+      .arg(&tmpfile)
+      .status()
+      .ok()
+      .filter(|s| s.success())
+  });
 
-  // Python is only a required dependency for `V8_FROM_SOURCE` builds.
-  // If python is not available, try falling back to curl.
+  // Try downloading with python. Python is a V8 build dependency,
+  // so this saves us from adding a Rust HTTP client dependency.
   let status = match status {
-    Ok(status) if status.success() => status,
+    Some(status) => status,
     _ => {
-      println!("Python downloader failed, trying with curl.");
-      Command::new("curl")
-        .arg("-L")
-        .arg("-f")
-        .arg("-s")
-        .arg("-o")
-        .arg(&tmpfile)
+      println!("Trying with Python...");
+      let python_status = Command::new(python())
+        .arg("./tools/download_file.py")
+        .arg("--url")
         .arg(url)
-        .status()
-        .unwrap()
+        .arg("--filename")
+        .arg(&tmpfile)
+        .status();
+
+      // Python is only a required dependency for `V8_FROM_SOURCE` builds.
+      // If python is not available, try falling back to curl.
+      match python_status {
+        Ok(status) if status.success() => status,
+        _ => {
+          println!("Python downloader failed, trying with curl.");
+          Command::new("curl")
+            .arg("-L")
+            .arg("-f")
+            .arg("-s")
+            .arg("-o")
+            .arg(&tmpfile)
+            .arg(url)
+            .status()
+            .unwrap()
+        }
+      }
     }
   };
 
   // Assert DL was successful
-  assert!(status.success());
+  if !status.success() {
+    panic!(
+      "Failed to download V8 prebuilt archive from {url}\n\
+     This is usually because no prebuilt archive is published for your target, \
+     in which case you should compile V8 from source by setting V8_FROM_SOURCE=1. \
+     It can also indicate a network connectivity problem."
+    );
+  }
   assert!(tmpfile.exists());
 
   // Write checksum (i.e url) & move file
@@ -854,7 +982,10 @@ fn print_link_flags() {
   if target_env == "msvc" {
     // On Windows, including libcpmt[d]/msvcprt[d] explicitly links the C++
     // standard library, which libc++ needs for exception_ptr internals.
-    if env::var("CARGO_FEATURE_CRT_STATIC").is_ok() {
+    let crt_static = env::var("CARGO_CFG_TARGET_FEATURE")
+      .unwrap_or_default()
+      .contains("crt-static");
+    if crt_static {
       println!("cargo:rustc-link-lib=libcpmt");
     } else {
       println!("cargo:rustc-link-lib=dylib=msvcprt");

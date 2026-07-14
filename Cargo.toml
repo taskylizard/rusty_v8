@@ -1,6 +1,6 @@
 [package]
 name = "flora_v8"
-version = "142.2.0-flora.3"
+version = "150.1.0-flora.1"
 description = "Rust bindings to V8 (flora fork)"
 readme = "README.md"
 authors = ["the Deno authors"]
@@ -33,6 +33,7 @@ opt-level = 1
 [features]
 default = ["use_custom_libcxx"]
 use_custom_libcxx = []
+simdutf = []
 v8_enable_pointer_compression = []
 v8_enable_sandbox = ["v8_enable_pointer_compression"]
 v8_enable_v8_checks = []
@@ -40,7 +41,7 @@ v8_enable_v8_checks = []
 [dependencies]
 bitflags = "2.5"
 paste = "1.0"
-temporal_capi = { version = "0.1.0", features = ["zoneinfo64"] }
+temporal_capi = { version = "0.2.3", features = ["zoneinfo64"] }
 
 [build-dependencies]
 miniz_oxide = "0.8.8"

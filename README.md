@@ -1,6 +1,6 @@
 # Rusty V8 Binding
 
-V8 Version: 14.2.231.17
+V8 Version: 15.0.245.2
 
 [![ci](https://github.com/taskylizard/rusty_v8/workflows/ci/badge.svg?branch=main)](https://github.com/taskylizard/rusty_v8/actions)
 [![crates](https://img.shields.io/crates/v/flora_v8.svg)](https://crates.io/crates/flora_v8)
@@ -145,6 +145,18 @@ docker build --build-arg CROSS_BASE_IMAGE=ghcr.io/cross-rs/aarch64-linux-android
 V8_FROM_SOURCE=1 cross build -vv --target aarch64-linux-android
 ```
 
+For iOS builds: cross compile from an arm64 macOS host. The simulator target
+keeps the JIT; the device target (`aarch64-apple-ios`) is built jitless, since
+iOS denies the JIT entitlement to non-WebKit apps (WebAssembly is also disabled
+in this configuration). `build.rs` selects these settings automatically per
+target — no extra GN args required:
+
+```bash
+rustup target add aarch64-apple-ios-sim  # simulator
+rustup target add aarch64-apple-ios      # device (jitless)
+V8_FROM_SOURCE=1 cargo build -vv --target aarch64-apple-ios-sim
+```
+
 The build depends on several binary tools: `gn`, `ninja` and `clang`. The tools
 will automatically be downloaded, if they are not detected in the environment.
 
@@ -156,6 +168,18 @@ is recommended.
 
 Arguments can be passed to `gn` by setting the `$GN_ARGS` environmental
 variable.
+
+For Linux targets, `rusty_v8` now defaults to defining
+`V8_TLS_USED_IN_LIBRARY` via GN args when building from source so the produced
+static archive can be linked into downstream `cdylib`/shared-library targets.
+The default injected argument is:
+
+```bash
+GN_ARGS='extra_cflags=["-DV8_TLS_USED_IN_LIBRARY"]'
+```
+
+Linux prebuilt release archives published by this repository are built with
+this shared-library-compatible TLS mode.
 
 Env vars used in when building from source: `SCCACHE`, `CCACHE`, `GN`, `NINJA`,
 `CLANG_BASE_PATH`, `GN_ARGS`

@@ -18,6 +18,7 @@ use crate::StartupData;
 use crate::String;
 use crate::V8::get_current_platform;
 use crate::Value;
+use crate::binding::v8__HeapCodeStatistics;
 use crate::binding::v8__HeapSpaceStatistics;
 use crate::binding::v8__HeapStatistics;
 use crate::binding::v8__Isolate__UseCounterFeature;
@@ -43,6 +44,7 @@ use crate::support::int;
 use crate::support::size_t;
 use crate::wasm::WasmStreaming;
 use crate::wasm::trampoline;
+use std::cell::UnsafeCell;
 use std::ffi::CStr;
 
 use std::any::Any;
@@ -68,6 +70,7 @@ use std::ptr::drop_in_place;
 use std::ptr::null_mut;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicPtr;
 
 /// Policy for running microtasks:
 ///   - explicit: microtasks are invoked with the
@@ -256,7 +259,10 @@ pub(crate) type RawHostImportModuleDynamicallyCallback =
     Local<'s, FixedArray>,
   ) -> *mut Promise;
 
-#[cfg(all(target_family = "windows", target_arch = "x86_64"))]
+#[cfg(all(
+  target_family = "windows",
+  any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 pub type RawHostImportModuleDynamicallyCallback =
   for<'s> unsafe extern "C" fn(
     *mut *mut Promise,
@@ -322,7 +328,10 @@ where
       .map_or_else(null_mut, |return_value| return_value.as_non_null().as_ptr())
     }
 
-    #[cfg(all(target_family = "windows", target_arch = "x86_64"))]
+    #[cfg(all(
+      target_family = "windows",
+      any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
     #[inline(always)]
     unsafe extern "C" fn abi_adapter<
       's,
@@ -415,7 +424,10 @@ pub(crate) type RawHostImportModuleWithPhaseDynamicallyCallback =
     Local<'s, FixedArray>,
   ) -> *mut Promise;
 
-#[cfg(all(target_family = "windows", target_arch = "x86_64"))]
+#[cfg(all(
+  target_family = "windows",
+  any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 pub type RawHostImportModuleWithPhaseDynamicallyCallback =
   for<'s> unsafe extern "C" fn(
     *mut *mut Promise,
@@ -487,7 +499,10 @@ where
       .map_or_else(null_mut, |return_value| return_value.as_non_null().as_ptr())
     }
 
-    #[cfg(all(target_family = "windows", target_arch = "x86_64"))]
+    #[cfg(all(
+      target_family = "windows",
+      any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
     #[inline(always)]
     unsafe extern "C" fn abi_adapter<
       's,
@@ -571,12 +586,6 @@ pub type PrepareStackTraceCallback<'s> =
     Local<'s, Array>,
   ) -> *mut *const Value;
 
-// System V ABI: MaybeLocal<Value> returned in a register.
-// System V i386 ABI: Local<Value> returned in hidden pointer (struct).
-#[cfg(not(target_os = "windows"))]
-#[repr(C)]
-pub struct PrepareStackTraceCallbackRet(*const Value);
-
 #[cfg(not(target_os = "windows"))]
 pub type PrepareStackTraceCallback<'s> =
   unsafe extern "C" fn(
@@ -584,6 +593,12 @@ pub type PrepareStackTraceCallback<'s> =
     Local<'s, Value>,
     Local<'s, Array>,
   ) -> PrepareStackTraceCallbackRet;
+
+// System V ABI: MaybeLocal<Value> returned in a register.
+// System V i386 ABI: Local<Value> returned in hidden pointer (struct).
+#[cfg(not(target_os = "windows"))]
+#[repr(C)]
+pub struct PrepareStackTraceCallbackRet(*const Value);
 
 pub type UseCounterFeature = v8__Isolate__UseCounterFeature;
 pub type UseCounterCallback =
@@ -608,6 +623,14 @@ unsafe extern "C" {
   fn v8__Isolate__MemoryPressureNotification(this: *mut RealIsolate, level: u8);
   fn v8__Isolate__ClearKeptObjects(isolate: *mut RealIsolate);
   fn v8__Isolate__LowMemoryNotification(isolate: *mut RealIsolate);
+  fn v8__Isolate__SetIdle(isolate: *mut RealIsolate, is_idle: bool);
+  fn v8__CpuProfiler__CollectSample(
+    isolate: *mut RealIsolate,
+    trace_id: *const u64,
+  );
+  fn v8__CpuProfiler__UseDetailedSourcePositionsForProfiling(
+    isolate: *mut RealIsolate,
+  );
   fn v8__Isolate__GetHeapStatistics(
     this: *mut RealIsolate,
     s: *mut v8__HeapStatistics,
@@ -653,6 +676,10 @@ unsafe extern "C" {
     isolate: *mut RealIsolate,
     space_statistics: *mut v8__HeapSpaceStatistics,
     index: size_t,
+  ) -> bool;
+  fn v8__Isolate__GetHeapCodeAndMetadataStatistics(
+    isolate: *mut RealIsolate,
+    code_statistics: *mut v8__HeapCodeStatistics,
   ) -> bool;
   fn v8__Isolate__AddNearHeapLimitCallback(
     isolate: *mut RealIsolate,
@@ -784,12 +811,22 @@ pub struct Isolate(NonNull<RealIsolate>);
 pub struct UnsafeRawIsolatePtr(*mut RealIsolate);
 
 impl UnsafeRawIsolatePtr {
+  #[inline]
+  pub(crate) fn from_real_ptr(ptr: *mut RealIsolate) -> Self {
+    Self(ptr)
+  }
+
   pub fn null() -> Self {
     Self(std::ptr::null_mut())
   }
 
   pub fn is_null(&self) -> bool {
     self.0.is_null()
+  }
+
+  #[inline]
+  pub(crate) fn as_real_ptr(&self) -> *mut RealIsolate {
+    self.0
   }
 }
 
@@ -893,7 +930,7 @@ impl Isolate {
 
   // Isolate data slots used internally by rusty_v8.
   const ANNEX_SLOT: u32 = 0;
-  const INTERNAL_DATA_SLOT_COUNT: u32 = 2;
+  const INTERNAL_DATA_SLOT_COUNT: u32 = 1;
 
   #[inline(always)]
   fn assert_embedder_data_slot_count_and_offset_correct(&self) {
@@ -958,63 +995,157 @@ impl Isolate {
 
   #[inline(always)]
   pub fn thread_safe_handle(&self) -> IsolateHandle {
-    IsolateHandle::new(self)
+    self.get_annex().isolate_handle.clone()
+  }
+
+  #[inline(always)]
+  pub(crate) fn global_liveness(&self) -> NonNull<IsolateLiveness> {
+    self.get_annex().global_liveness
   }
 
   /// See [`IsolateHandle::terminate_execution`]
   #[inline(always)]
   pub fn terminate_execution(&self) -> bool {
-    self.thread_safe_handle().terminate_execution()
+    unsafe { v8__Isolate__TerminateExecution(self.as_real_ptr()) };
+    true
   }
 
   /// See [`IsolateHandle::cancel_terminate_execution`]
   #[inline(always)]
   pub fn cancel_terminate_execution(&self) -> bool {
-    self.thread_safe_handle().cancel_terminate_execution()
+    unsafe { v8__Isolate__CancelTerminateExecution(self.as_real_ptr()) };
+    true
   }
 
   /// See [`IsolateHandle::is_execution_terminating`]
   #[inline(always)]
   pub fn is_execution_terminating(&self) -> bool {
-    self.thread_safe_handle().is_execution_terminating()
+    unsafe { v8__Isolate__IsExecutionTerminating(self.as_real_ptr()) }
   }
 
   pub(crate) fn create_annex(
     &mut self,
     create_param_allocations: Box<dyn Any>,
   ) {
-    let annex_arc = Arc::new(IsolateAnnex::new(self, create_param_allocations));
-    let annex_ptr = Arc::into_raw(annex_arc);
+    let annex_box = Box::new(IsolateAnnex::new(self, create_param_allocations));
+    let annex_ptr = Box::into_raw(annex_box);
     assert!(self.get_data_internal(Self::ANNEX_SLOT).is_null());
     self.set_data_internal(Self::ANNEX_SLOT, annex_ptr as *mut _);
   }
 
-  unsafe fn dispose_annex(&mut self) -> Box<dyn Any> {
-    // Set the `isolate` pointer inside the annex struct to null, so any
-    // IsolateHandle that outlives the isolate will know that it can't call
-    // methods on the isolate.
-    let annex = self.get_annex_mut();
-    {
-      let _lock = annex.isolate_mutex.lock().unwrap();
-      annex.isolate = null_mut();
+  /// Prepare annex teardown while keeping `ANNEX_SLOT` pointing at the annex.
+  ///
+  /// Nulls the `IsolateHandle`'s inner pointer, reclaims
+  /// `create_param_allocations`, and drops the slot storage. The annex
+  /// allocation itself stays alive and `ANNEX_SLOT` keeps pointing at it,
+  /// so code that runs during the subsequent V8 teardown GC (weak
+  /// callbacks, guaranteed finalizers, embedder slot drops) can still
+  /// resolve the annex through `get_annex()` / `get_annex_mut()`.
+  ///
+  /// The returned pointer must be passed exactly once to
+  /// [`Self::finish_annex_dispose`] (or, on the snapshot path, dropped by
+  /// [`Self::dispose_annex`]).
+  ///
+  /// # Safety
+  ///
+  /// Called once per isolate, from teardown paths only.
+  unsafe fn prepare_annex_for_dispose(
+    &mut self,
+  ) -> (*mut IsolateAnnex, Box<dyn Any>) {
+    let annex_ptr =
+      self.get_data_internal(Self::ANNEX_SLOT) as *mut IsolateAnnex;
+    assert!(!annex_ptr.is_null());
+
+    // Each step below operates through the raw pointer rather than a
+    // long-lived `&mut IsolateAnnex`. The borrows we form here are
+    // narrowly-scoped expressions that end before any user-controlled
+    // Drop runs. This matters because slot Drops, weak callbacks, and
+    // guaranteed finalizers may re-enter the isolate (e.g. via
+    // `Isolate::thread_safe_handle()`) and resolve the annex through
+    // `get_annex()`. An outer `&mut IsolateAnnex` held across that
+    // re-entry would alias the shared borrow they obtain.
+
+    // SAFETY: `annex_ptr` is non-null and points at a live `IsolateAnnex`
+    // (ANNEX_SLOT is only cleared by code further down this teardown
+    // path).
+    unsafe {
+      // Null the `IsolateHandle` so handles outliving the isolate see a
+      // disposed state.
+      (*annex_ptr).global_liveness().dispose();
+      (*annex_ptr).isolate_handle.dispose();
     }
 
-    // Clear slots and drop owned objects that were taken out of `CreateParams`.
+    // Reclaim `create_param_allocations` so the caller can keep it alive
+    // for as long as V8 needs (during snapshot blob creation, V8 reads
+    // external references out of it).
     let create_param_allocations =
-      std::mem::replace(&mut annex.create_param_allocations, Box::new(()));
-    annex.slots.clear();
+      unsafe { (*annex_ptr).create_param_allocations.take().unwrap() };
 
-    // Run through any remaining guaranteed finalizers.
-    for finalizer in annex.finalizer_map.drain() {
+    // Move slots out before dropping them. A user Drop may re-enter the
+    // annex; holding `&mut (*annex_ptr).slots` across that would alias
+    // any `&IsolateAnnex` the re-entry obtains.
+    let slots = unsafe { std::mem::take(&mut (*annex_ptr).slots) };
+    drop(slots);
+
+    (annex_ptr, create_param_allocations)
+  }
+
+  /// Drain `finalizer_map` and invoke any guaranteed finalizers.
+  ///
+  /// New finalizers registered by the running callbacks land in the
+  /// annex's now-empty `finalizer_map` and will be picked up by the next
+  /// call (currently the second drain in [`OwnedIsolate::drop`] after V8
+  /// finishes its teardown GC).
+  ///
+  /// # Safety
+  ///
+  /// `annex_ptr` must point at a live `IsolateAnnex` with `ANNEX_SLOT`
+  /// still referencing it, so re-entrant callbacks resolve the annex
+  /// through normal accessors.
+  unsafe fn run_remaining_guaranteed_finalizers(annex_ptr: *mut IsolateAnnex) {
+    // Take the map out under a narrow borrow so the for-loop below
+    // borrows a local instead of `(*annex_ptr).finalizer_map`. Callbacks
+    // re-entering the annex via `get_annex_mut()` would otherwise alias
+    // an in-flight `&mut`.
+    let mut map = unsafe { std::mem::take(&mut (*annex_ptr).finalizer_map) };
+    for finalizer in map.drain() {
       if let FinalizerCallback::Guaranteed(callback) = finalizer {
         callback();
       }
     }
+  }
 
-    // Subtract one from the Arc<IsolateAnnex> reference count.
-    unsafe { Arc::from_raw(annex) };
-    self.set_data(0, null_mut());
+  /// Free the annex allocation after V8's final teardown.
+  ///
+  /// Drains any guaranteed finalizers V8's teardown GC may have
+  /// registered, then drops the annex box. `ANNEX_SLOT` is not cleared
+  /// because the isolate is gone — its embedder data storage no longer
+  /// exists.
+  ///
+  /// # Safety
+  ///
+  /// `annex_ptr` must be the pointer returned from a matching
+  /// [`Self::prepare_annex_for_dispose`] call, and the V8 isolate must
+  /// already be fully disposed (so no further callbacks can fire).
+  unsafe fn finish_annex_dispose(annex_ptr: *mut IsolateAnnex) {
+    unsafe { Self::run_remaining_guaranteed_finalizers(annex_ptr) };
+    unsafe { drop(Box::from_raw(annex_ptr)) };
+  }
 
+  /// Snapshot-path teardown.
+  ///
+  /// Used by [`OwnedIsolate::create_blob`], which consumes the isolate
+  /// before V8 has run its final dispose. Cleans up the annex synchronously
+  /// (no weak-callback re-entry to worry about here) and nulls `ANNEX_SLOT`
+  /// so the snapshot creator's later isolate-dispose sees a clean slot.
+  unsafe fn dispose_annex(&mut self) -> Box<dyn Any> {
+    let (annex_ptr, create_param_allocations) =
+      unsafe { self.prepare_annex_for_dispose() };
+    unsafe { Self::run_remaining_guaranteed_finalizers(annex_ptr) };
+    let taken_annex =
+      self.take_data_internal(Self::ANNEX_SLOT) as *mut IsolateAnnex;
+    debug_assert_eq!(taken_annex, annex_ptr);
+    unsafe { drop(Box::from_raw(annex_ptr)) };
     create_param_allocations
   }
 
@@ -1034,6 +1165,17 @@ impl Isolate {
     unsafe { &mut *annex_ptr }
   }
 
+  /// Returns a non-null pointer to the isolate's annex data.
+  /// This is used by scopes to cache the annex pointer and avoid
+  /// repeated FFI calls to `v8__Isolate__GetData`.
+  #[inline(always)]
+  pub(crate) fn get_annex_ptr(&self) -> NonNull<IsolateAnnex> {
+    let annex_ptr =
+      self.get_data_internal(Self::ANNEX_SLOT) as *mut IsolateAnnex;
+    debug_assert!(!annex_ptr.is_null());
+    unsafe { NonNull::new_unchecked(annex_ptr) }
+  }
+
   pub(crate) fn set_snapshot_creator(
     &mut self,
     snapshot_creator: SnapshotCreator,
@@ -1051,13 +1193,6 @@ impl Isolate {
 
   pub(crate) fn get_finalizer_map_mut(&mut self) -> &mut FinalizerMap {
     &mut self.get_annex_mut().finalizer_map
-  }
-
-  fn get_annex_arc(&self) -> Arc<IsolateAnnex> {
-    let annex_ptr = self.get_annex();
-    let annex_arc = unsafe { Arc::from_raw(annex_ptr) };
-    let _ = Arc::into_raw(annex_arc.clone());
-    annex_arc
   }
 
   /// Retrieve embedder-specific data from the isolate.
@@ -1090,6 +1225,14 @@ impl Isolate {
     unsafe { v8__Isolate__SetData(self.as_real_ptr(), slot, data) }
   }
 
+  /// Get the value of the slot and replace it with a null pointer.
+  #[inline(always)]
+  fn take_data_internal(&mut self, slot: u32) -> *mut c_void {
+    let ptr = self.get_data_internal(slot);
+    self.set_data_internal(slot, null_mut());
+    ptr
+  }
+
   // pub(crate) fn init_scope_root(&mut self) {
   //   ScopeData::new_root(self);
   // }
@@ -1120,21 +1263,13 @@ impl Isolate {
   /// Get a reference to embedder data added with `set_slot()`.
   #[inline(always)]
   pub fn get_slot<T: 'static>(&self) -> Option<&T> {
-    self
-      .get_annex()
-      .slots
-      .get(&TypeId::of::<T>())
-      .map(|slot| unsafe { slot.borrow::<T>() })
+    self.get_annex().get_slot::<T>()
   }
 
   /// Get a mutable reference to embedder data added with `set_slot()`.
   #[inline(always)]
   pub fn get_slot_mut<T: 'static>(&mut self) -> Option<&mut T> {
-    self
-      .get_annex_mut()
-      .slots
-      .get_mut(&TypeId::of::<T>())
-      .map(|slot| unsafe { slot.borrow_mut::<T>() })
+    self.get_annex_mut().get_slot_mut::<T>()
   }
 
   /// Use with Isolate::get_slot and Isolate::get_slot_mut to associate state
@@ -1150,21 +1285,13 @@ impl Isolate {
   /// The value will be dropped when the isolate is dropped.
   #[inline(always)]
   pub fn set_slot<T: 'static>(&mut self, value: T) -> bool {
-    self
-      .get_annex_mut()
-      .slots
-      .insert(TypeId::of::<T>(), RawSlot::new(value))
-      .is_none()
+    self.get_annex_mut().set_slot(value)
   }
 
   /// Removes the embedder data added with `set_slot()` and returns it if it exists.
   #[inline(always)]
   pub fn remove_slot<T: 'static>(&mut self) -> Option<T> {
-    self
-      .get_annex_mut()
-      .slots
-      .remove(&TypeId::of::<T>())
-      .map(|slot| unsafe { slot.into_inner::<T>() })
+    self.get_annex_mut().remove_slot::<T>()
   }
 
   /// Sets this isolate as the entered one for the current thread.
@@ -1229,6 +1356,49 @@ impl Isolate {
     unsafe { v8__Isolate__LowMemoryNotification(self.as_real_ptr()) }
   }
 
+  /// Tells the VM whether the embedder is currently idle or not.
+  ///
+  /// This is consulted by V8's CPU profiler: samples taken while the embedder
+  /// is idle (for instance, blocked waiting for I/O in the event loop) are
+  /// attributed to the "(idle)" node instead of being counted as running code.
+  /// Embedders that don't call this end up reporting ~100% CPU usage in tools
+  /// like Chrome DevTools even when the program is doing nothing.
+  ///
+  /// Must be called on the isolate's own thread while no JavaScript is
+  /// executing (e.g. right before parking the event loop, and again with
+  /// `false` once it resumes).
+  #[inline(always)]
+  pub fn set_idle(&mut self, is_idle: bool) {
+    unsafe { v8__Isolate__SetIdle(self.as_real_ptr(), is_idle) }
+  }
+
+  /// Synchronously collect a CPU profiling sample in all CPU profilers
+  /// attached to this isolate. This does not affect the number of ticks
+  /// recorded for the current top node.
+  ///
+  /// When `trace_id` is `Some`, the sample is tagged with that identifier,
+  /// which is useful to associate the sample with a trace event.
+  #[inline(always)]
+  pub fn collect_cpu_profiler_sample(&mut self, trace_id: Option<u64>) {
+    let trace_id_ptr = match &trace_id {
+      Some(id) => id as *const u64,
+      None => std::ptr::null(),
+    };
+    unsafe { v8__CpuProfiler__CollectSample(self.as_real_ptr(), trace_id_ptr) }
+  }
+
+  /// Generate more detailed source positions for code objects. This results in
+  /// better accuracy when mapping CPU profiling samples back to script source,
+  /// at the cost of some additional memory and CPU overhead.
+  #[inline(always)]
+  pub fn use_detailed_source_positions_for_profiling(&mut self) {
+    unsafe {
+      v8__CpuProfiler__UseDetailedSourcePositionsForProfiling(
+        self.as_real_ptr(),
+      )
+    }
+  }
+
   /// Get statistics about the heap memory usage.
   #[inline(always)]
   pub fn get_heap_statistics(&mut self) -> HeapStatistics {
@@ -1270,6 +1440,26 @@ impl Isolate {
       s.assume_init()
     };
     Some(HeapSpaceStatistics(inner))
+  }
+
+  /// Get code and metadata statistics for the heap.
+  ///
+  /// \returns true on success.
+  #[inline(always)]
+  pub fn get_heap_code_and_metadata_statistics(
+    &mut self,
+  ) -> Option<HeapCodeStatistics> {
+    let inner = unsafe {
+      let mut s = MaybeUninit::zeroed();
+      if !v8__Isolate__GetHeapCodeAndMetadataStatistics(
+        self.as_real_ptr(),
+        s.as_mut_ptr(),
+      ) {
+        return None;
+      }
+      s.assume_init()
+    };
+    Some(HeapCodeStatistics(inner))
   }
 
   /// Tells V8 to capture current stack trace when uncaught exception occurs
@@ -1679,7 +1869,7 @@ impl Isolate {
       + for<'a, 'b, 'c> Fn(
         &'c mut PinScope<'a, 'b>,
         Local<'a, Value>,
-        WasmStreaming,
+        WasmStreaming<false>,
       ),
   {
     unsafe {
@@ -1875,69 +2065,188 @@ impl Isolate {
 }
 
 pub(crate) struct IsolateAnnex {
-  create_param_allocations: Box<dyn Any>,
+  // Wrapped in `Option` so teardown can `take()` it through a `&mut
+  // IsolateAnnex` without having to move ownership of the whole annex out
+  // of `ANNEX_SLOT`. Only `prepare_annex_for_dispose` consumes it; that
+  // function runs at most once per annex, so the `unwrap()` there can
+  // never observe a `None`.
+  create_param_allocations: Option<Box<dyn Any>>,
   slots: HashMap<TypeId, RawSlot, BuildTypeIdHasher>,
   finalizer_map: FinalizerMap,
   maybe_snapshot_creator: Option<SnapshotCreator>,
-  // The `isolate` and `isolate_mutex` fields are there so an `IsolateHandle`
-  // (which may outlive the isolate itself) can determine whether the isolate
-  // is still alive, and if so, get a reference to it. Safety rules:
-  // - The 'main thread' must lock the mutex and reset `isolate` to null just
-  //   before the isolate is disposed.
-  // - Any other thread must lock the mutex while it's reading/using the
-  //   `isolate` pointer.
-  isolate: *mut RealIsolate,
-  isolate_mutex: Mutex<()>,
+  isolate_handle: IsolateHandle,
+  global_liveness: NonNull<IsolateLiveness>,
 }
 
-unsafe impl Send for IsolateAnnex {}
-unsafe impl Sync for IsolateAnnex {}
-
 impl IsolateAnnex {
-  fn new(
-    isolate: &mut Isolate,
-    create_param_allocations: Box<dyn Any>,
-  ) -> Self {
+  fn new(isolate: &Isolate, create_param_allocations: Box<dyn Any>) -> Self {
+    // Globals may be dropped after their host isolate is disposed. Keep this
+    // tiny liveness cell valid so those late drops can observe the null isolate
+    // pointer without retaining an Arc per Global.
+    let global_liveness = Box::leak(Box::new(IsolateLiveness::new(isolate)));
     Self {
-      create_param_allocations,
+      create_param_allocations: Some(create_param_allocations),
       slots: HashMap::default(),
       finalizer_map: FinalizerMap::default(),
       maybe_snapshot_creator: None,
-      isolate: isolate.as_real_ptr(),
-      isolate_mutex: Mutex::new(()),
+      isolate_handle: IsolateHandle::new(isolate),
+      global_liveness: NonNull::from(global_liveness),
     }
+  }
+
+  #[inline(always)]
+  fn global_liveness(&self) -> &IsolateLiveness {
+    unsafe { self.global_liveness.as_ref() }
+  }
+
+  #[inline(always)]
+  pub(crate) fn get_slot<T: 'static>(&self) -> Option<&T> {
+    self
+      .slots
+      .get(&TypeId::of::<T>())
+      .map(|slot| unsafe { slot.borrow::<T>() })
+  }
+
+  #[inline(always)]
+  pub(crate) fn get_slot_mut<T: 'static>(&mut self) -> Option<&mut T> {
+    self
+      .slots
+      .get_mut(&TypeId::of::<T>())
+      .map(|slot| unsafe { slot.borrow_mut::<T>() })
+  }
+
+  #[inline(always)]
+  pub(crate) fn set_slot<T: 'static>(&mut self, value: T) -> bool {
+    self
+      .slots
+      .insert(TypeId::of::<T>(), RawSlot::new(value))
+      .is_none()
+  }
+
+  #[inline(always)]
+  pub(crate) fn remove_slot<T: 'static>(&mut self) -> Option<T> {
+    self
+      .slots
+      .remove(&TypeId::of::<T>())
+      .map(|slot| unsafe { slot.into_inner::<T>() })
+  }
+}
+
+pub(crate) struct IsolateLiveness {
+  isolate: AtomicPtr<RealIsolate>,
+}
+
+impl IsolateLiveness {
+  #[inline(always)]
+  fn new(isolate: &Isolate) -> Self {
+    Self {
+      isolate: AtomicPtr::new(isolate.as_real_ptr()),
+    }
+  }
+
+  #[inline(always)]
+  fn dispose(&self) {
+    self
+      .isolate
+      .store(null_mut(), std::sync::atomic::Ordering::Relaxed);
+  }
+
+  #[inline(always)]
+  pub(crate) fn get_isolate_ptr(&self) -> *mut RealIsolate {
+    self.isolate.load(std::sync::atomic::Ordering::Relaxed)
   }
 }
 
 impl Debug for IsolateAnnex {
   fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
     f.debug_struct("IsolateAnnex")
-      .field("isolate", &self.isolate)
-      .field("isolate_mutex", &self.isolate_mutex)
+      .field("isolate_handle", &self.isolate_handle)
       .finish()
   }
 }
 
-/// IsolateHandle is a thread-safe reference to an Isolate. It's main use is to
+pub(crate) struct IsolateHandleInner {
+  /// Safety invariants:
+  /// - The 'main thread' must lock the mutex and reset `isolate` to null just
+  ///   before the isolate is disposed.
+  /// - Any other thread must lock the mutex while it's reading/using the
+  ///   `isolate` pointer.
+  // These two fields can be replaced with a `Mutex<*mut RealIsolate>` once
+  // `Mutex::data_ptr()` is stabilized.
+  isolate: UnsafeCell<*mut RealIsolate>,
+  isolate_mutex: Mutex<()>,
+}
+
+unsafe impl Send for IsolateHandleInner {}
+unsafe impl Sync for IsolateHandleInner {}
+
+/// IsolateHandle is a thread-safe reference to an Isolate. Its main use is to
 /// terminate execution of a running isolate from another thread.
 ///
-/// It is created with Isolate::thread_safe_handle().
+/// It is created with [`Isolate::thread_safe_handle()`].
 ///
 /// IsolateHandle is Cloneable, Send, and Sync.
-#[derive(Clone, Debug)]
-pub struct IsolateHandle(Arc<IsolateAnnex>);
+#[derive(Clone)]
+pub struct IsolateHandle(Arc<IsolateHandleInner>);
+
+impl fmt::Debug for IsolateHandle {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    if let Ok(_lock) = self.0.isolate_mutex.try_lock() {
+      // SAFETY: mutex lock is held
+      let ptr = unsafe { *self.0.isolate.get() };
+      f.debug_struct("IsolateHandle")
+        .field("isolate_ptr", &ptr)
+        .finish()
+    } else {
+      f.debug_struct("IsolateHandle").finish_non_exhaustive()
+    }
+  }
+}
 
 impl IsolateHandle {
-  // This function is marked unsafe because it must be called only with either
-  // IsolateAnnex::mutex locked, or from the main thread associated with the V8
-  // isolate.
-  pub(crate) unsafe fn get_isolate_ptr(&self) -> *mut RealIsolate {
-    self.0.isolate
-  }
-
   #[inline(always)]
   fn new(isolate: &Isolate) -> Self {
-    Self(isolate.get_annex_arc())
+    let inner = Arc::new(IsolateHandleInner {
+      isolate: UnsafeCell::new(isolate.as_real_ptr()),
+      isolate_mutex: Mutex::new(()),
+    });
+    Self(inner)
+  }
+
+  /// Set the inner isolate pointer to null.
+  fn dispose(&self) {
+    let _lock = self.0.isolate_mutex.lock().unwrap();
+    // SAFETY: mutex lock is held
+    unsafe { *self.0.isolate.get() = null_mut() }
+  }
+
+  /// Access the isolate, if it hasn't yet been disposed of.
+  ///
+  /// A lock is taken on the pointer and held for the scope of `f`, which
+  /// means the isolate can't be dropped until after `f` returns. If you
+  /// do something with the isolate afterwards, that needs to be verified
+  /// to be safe separately.
+  pub(crate) fn with_isolate_ptr<R>(
+    &self,
+    f: impl FnOnce(NonNull<RealIsolate>) -> R,
+  ) -> Option<R> {
+    let _lock = self.0.isolate_mutex.lock().unwrap();
+    // SAFETY: mutex lock is held
+    let ptr = unsafe { *self.0.isolate.get() };
+    NonNull::new(ptr).map(f)
+  }
+
+  /// Access the pointer for this isolate - it may be null.
+  ///
+  /// # Safety
+  /// This function must only be called from the main thread associated with
+  /// the V8 isolate.
+  // TODO: have this return an `Option<NonNull<RealIsolate>>`
+  pub(crate) unsafe fn get_isolate_ptr(&self) -> *mut RealIsolate {
+    // SAFETY: this function must only be called from the main thread of the
+    // isolate. On that thread, the caller cannot race with teardown code that
+    // sets this pointer to null.
+    unsafe { *self.0.isolate.get() }
   }
 
   /// Forcefully terminate the current thread of JavaScript execution
@@ -1949,13 +2258,11 @@ impl IsolateHandle {
   /// Returns false if Isolate was already destroyed.
   #[inline(always)]
   pub fn terminate_execution(&self) -> bool {
-    let _lock = self.0.isolate_mutex.lock().unwrap();
-    if self.0.isolate.is_null() {
-      false
-    } else {
-      unsafe { v8__Isolate__TerminateExecution(self.0.isolate) };
-      true
-    }
+    self
+      .with_isolate_ptr(|isolate| unsafe {
+        v8__Isolate__TerminateExecution(isolate.as_ptr())
+      })
+      .is_some()
   }
 
   /// Resume execution capability in the given isolate, whose execution
@@ -1974,13 +2281,11 @@ impl IsolateHandle {
   /// Returns false if Isolate was already destroyed.
   #[inline(always)]
   pub fn cancel_terminate_execution(&self) -> bool {
-    let _lock = self.0.isolate_mutex.lock().unwrap();
-    if self.0.isolate.is_null() {
-      false
-    } else {
-      unsafe { v8__Isolate__CancelTerminateExecution(self.0.isolate) };
-      true
-    }
+    self
+      .with_isolate_ptr(|isolate| unsafe {
+        v8__Isolate__CancelTerminateExecution(isolate.as_ptr())
+      })
+      .is_some()
   }
 
   /// Is V8 terminating JavaScript execution.
@@ -1993,12 +2298,11 @@ impl IsolateHandle {
   /// Returns false if Isolate was already destroyed.
   #[inline(always)]
   pub fn is_execution_terminating(&self) -> bool {
-    let _lock = self.0.isolate_mutex.lock().unwrap();
-    if self.0.isolate.is_null() {
-      false
-    } else {
-      unsafe { v8__Isolate__IsExecutionTerminating(self.0.isolate) }
-    }
+    self
+      .with_isolate_ptr(|isolate| unsafe {
+        v8__Isolate__IsExecutionTerminating(isolate.as_ptr())
+      })
+      .unwrap_or(false)
   }
 
   /// Request V8 to interrupt long running JavaScript code and invoke
@@ -2018,13 +2322,11 @@ impl IsolateHandle {
     callback: InterruptCallback,
     data: *mut c_void,
   ) -> bool {
-    let _lock = self.0.isolate_mutex.lock().unwrap();
-    if self.0.isolate.is_null() {
-      false
-    } else {
-      unsafe { v8__Isolate__RequestInterrupt(self.0.isolate, callback, data) };
-      true
-    }
+    self
+      .with_isolate_ptr(|isolate| unsafe {
+        v8__Isolate__RequestInterrupt(isolate.as_ptr(), callback, data)
+      })
+      .is_some()
   }
 }
 
@@ -2088,18 +2390,35 @@ impl Drop for OwnedIsolate {
         snapshot_creator.is_none(),
         "If isolate was created using v8::Isolate::snapshot_creator, you should use v8::OwnedIsolate::create_blob before dropping an isolate."
       );
-      let is_current =
-        std::ptr::eq(self.cxx_isolate.as_mut(), v8__Isolate__GetCurrent());
-      if is_current {
-        self.exit();
-      } else {
-        let locker = crate::Locker::new(self);
-        locker.enter();
-        locker.exit();
+      match current_raw_isolate_ptr() {
+        Some(current) if current.as_real_ptr() == self.cxx_isolate.as_ptr() => {
+          self.exit();
+        }
+        Some(_current) => {
+          panic!(
+            "v8::OwnedIsolate instances must be dropped in the reverse order of creation. They are entered upon creation and exited upon being dropped."
+          );
+        }
+        None => {
+          let locker = crate::Locker::new(self);
+          locker.enter();
+          locker.exit();
+        }
       }
-      self.dispose_annex();
+      let (annex_ptr, _create_param_allocations) =
+        self.prepare_annex_for_dispose();
+      Isolate::run_remaining_guaranteed_finalizers(annex_ptr);
       Platform::notify_isolate_shutdown(&get_current_platform(), self);
+      // V8's final teardown runs here. `ANNEX_SLOT` still references the
+      // (drained) annex, so any re-entrant access from weak callbacks or
+      // embedder code resolves normally instead of panicking on a null
+      // slot.
       self.dispose();
+      // Drain finalizers V8 may have registered during teardown, then free
+      // the annex allocation. V8 has fully disposed the isolate, so its
+      // embedder data storage no longer exists and `ANNEX_SLOT` needs no
+      // explicit clearing.
+      Isolate::finish_annex_dispose(annex_ptr);
     }
   }
 }
@@ -2236,6 +2555,14 @@ impl HeapStatistics {
     self.0.number_of_detached_contexts_
   }
 
+  /// Returns the total number of bytes allocated since the Isolate was created.
+  /// This includes all heap objects allocated in any space (new, old, code,
+  /// etc.).
+  #[inline(always)]
+  pub fn total_allocated_bytes(&self) -> u64 {
+    self.0.total_allocated_bytes_
+  }
+
   /// Returns a 0/1 boolean, which signifies whether the V8 overwrite heap
   /// garbage with a bit pattern.
   #[inline(always)]
@@ -2265,6 +2592,26 @@ impl HeapSpaceStatistics {
 
   pub fn physical_space_size(&self) -> usize {
     self.0.physical_space_size_
+  }
+}
+
+pub struct HeapCodeStatistics(v8__HeapCodeStatistics);
+
+impl HeapCodeStatistics {
+  pub fn code_and_metadata_size(&self) -> usize {
+    self.0.code_and_metadata_size_
+  }
+
+  pub fn bytecode_and_metadata_size(&self) -> usize {
+    self.0.bytecode_and_metadata_size_
+  }
+
+  pub fn external_script_source_size(&self) -> usize {
+    self.0.external_script_source_size_
+  }
+
+  pub fn cpu_profiler_metadata_size(&self) -> usize {
+    self.0.cpu_profiler_metadata_size_
   }
 }
 
